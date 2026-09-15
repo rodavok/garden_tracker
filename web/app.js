@@ -265,7 +265,7 @@ async function renderHarvests() {
       <label class="btn">Import CSV<input type="file" id="hv-import" accept=".csv,text/csv" class="hidden"></label>
     </div>
     <div class="scrollx" style="margin-top:10px"><table><thead><tr><th>Date</th><th>Crop</th><th>Variety</th><th class="r">Weight</th><th>Notes</th><th></th></tr></thead><tbody>
-      ${rows.map(h => `<tr class="click" data-edit="${h.id}"><td class="num">${fmtD(h.date, !hv.season)}</td><td><span class="cropname"><span class="dot" style="--c:${cropColor(cropById(h.crop_id))}"></span>${esc(h.crop_name)}</span></td><td class="muted">${esc(h.variety_name || "")}</td><td class="r"><b>${fmtW(h.weight_g)}</b></td><td class="muted small">${esc(h.notes)}${h.planting_id ? ` <span class="badge">planting ${h.planting_id}</span>` : ""}</td><td class="r"><span class="muted">✎</span></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No harvests match.</td></tr>`}
+      ${rows.map(h => `<tr class="click" data-edit="${h.id}"><td class="num">${fmtD(h.date, !hv.season)}</td><td><span class="cropname"><span class="dot" style="--c:${cropColor(cropById(h.crop_id))}"></span>${esc(h.crop_name)}</span></td><td class="muted">${esc(h.variety_name || "")}</td><td class="r"><b>${fmtW(h.weight_g)}</b></td><td class="muted small wrap">${esc(h.notes)}${h.planting_id ? ` <span class="badge">planting ${h.planting_id}</span>` : ""}</td><td class="r"><span class="muted">✎</span></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No harvests match.</td></tr>`}
     </tbody></table></div></div>`;
   $("#hv-season").onchange = e => { hv.season = e.target.value; renderHarvests(); };
   $("#hv-crop").onchange = e => { hv.crop = e.target.value; renderHarvests(); };
@@ -299,7 +299,7 @@ async function renderWeather() {
       <td class="r">${w && w.precip_mm != null ? (w.precip_mm >= 0.05 ? fmtP(w.precip_mm) : "<span class='muted'>0</span>") : "<span class='muted'>—</span>"}</td>
       <td class="r">${w ? fmtSun(w.sunshine_s) : "<span class='muted'>—</span>"}</td>
       <td class="r">${hByDate[iso] ? fmtW(hByDate[iso]) : ""}</td>
-      <td class="small">${w?.source === "manual" ? `<span class="badge">manual</span> ` : ""}${esc(w?.notes || "")}</td></tr>`);
+      <td class="small wrap">${w?.source === "manual" ? `<span class="badge">manual</span> ` : ""}${esc(w?.notes || "")}</td></tr>`);
   }
   const tot = days.reduce((a, d) => a + (d.precip_mm || 0), 0);
   $("#view").innerHTML = `<div class="card">
@@ -357,7 +357,7 @@ async function renderPlantings() {
         <td class="r"><b>${p.harvests ? fmtW(p.total_g) : "—"}</b>${p.harvests ? `<span class="muted small"> · ${p.harvests}</span>` : ""}</td>
         <td class="r">${p.g_per_plant != null && p.harvests ? fmtW(p.g_per_plant) : "—"}</td>
         <td class="r">${p.first_harvest ? `${fmtD(p.first_harvest)}${p.days_to_first != null ? `<span class="muted small"> · ${p.days_to_first}d</span>` : ""}` : "—"}</td>
-        <td class="muted small">${esc(p.notes)}</td></tr>`).join("") || `<tr><td colspan="9" class="empty">No plantings${plSeason ? " in " + plSeason : ""}. Add one to track days-to-harvest and yield per plant.</td></tr>`}
+        <td class="muted small wrap">${esc(p.notes)}</td></tr>`).join("") || `<tr><td colspan="9" class="empty">No plantings${plSeason ? " in " + plSeason : ""}. Add one to track days-to-harvest and yield per plant.</td></tr>`}
     </tbody></table></div>
     <p class="muted small" style="margin:10px 0 0">Link harvests to a planting from the Log form (the Planting field appears once a crop has plantings that season). "First pick" counts days from set-out (or sowing).</p>
   </div>`;
@@ -527,7 +527,7 @@ function lineChart(el, { series, yFmt, yTip, xFmt, emptyText }) {
     let rows = "", anyDate = "";
     series.forEach((s, i) => {
       // value at-or-before this x (cumulative series hold their value between points)
-      const pts = s.points; let p = null; for (const q of pts) if (q.x <= best) p = q; else break;
+      const pts = s.points; let p = null; if (best <= pts[pts.length - 1].x) for (const q of pts) if (q.x <= best) p = q; else break;
       if (p) { dots[i].setAttribute("cx", X(best)); dots[i].setAttribute("cy", Y(p.y)); dots[i].style.display = ""; rows += `<div class="r"><i style="--c:${s.color}"></i><b>${esc((yTip || yFmt)(p.y))}</b><span>${esc(s.name)}</span></div>`; }
       else dots[i].style.display = "none";
     });

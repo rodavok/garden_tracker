@@ -43,10 +43,10 @@
   /* Header */
   header{padding:18px 0 8px}
   .brandrow{display:flex;align-items:center;justify-content:space-between;gap:12px}
-  .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.02em;font-size:26px;line-height:1}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.02em;font-size:26px;line-height:1;min-width:0;flex:1 1 auto}
   .brand svg{width:30px;height:30px}
-  .brand small{font-weight:500;color:var(--muted);font-size:13px;letter-spacing:0;margin-left:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:38vw}
-  .unitsw{display:inline-flex;border:1px solid var(--rule);border-radius:999px;overflow:hidden;background:var(--card)}
+  .brand small{font-weight:500;color:var(--muted);font-size:13px;letter-spacing:0;margin-left:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto}
+  .unitsw{display:inline-flex;flex:0 0 auto;border:1px solid var(--rule);border-radius:999px;overflow:hidden;background:var(--card)}
   .unitsw button{border:none;background:transparent;padding:6px 12px;font-size:13px;color:var(--muted);white-space:nowrap}
   .unitsw button[aria-pressed="true"]{background:var(--leaf);color:#fff}
 
@@ -111,6 +111,9 @@
   tr.click{cursor:pointer}
   tr.click:hover td{background:var(--paper)}
   .scrollx{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .scrollx th,.scrollx td{white-space:nowrap}
+  .scrollx td.wrap{white-space:normal;min-width:160px}
+  .cropname{white-space:nowrap}
   .entry{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--rule)}
   .entry:last-child{border-bottom:none}
   .entry .w{font-weight:700;font-variant-numeric:tabular-nums;min-width:74px;text-align:right}
