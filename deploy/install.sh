@@ -6,6 +6,9 @@ set -euo pipefail
 APP_DIR=/opt/garden
 SVC_USER=garden
 
+# `python -m app.seed` resolves the package from the working directory.
+cd "$APP_DIR"
+
 echo "==> Installing OS packages"
 apt-get update
 # avahi-daemon publishes <hostname>.local on the LAN via mDNS, so the app is
@@ -22,11 +25,14 @@ python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --upgrade pip
 "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 
-echo "==> Seeding the database from data/seed/garden_produce.csv (skips rows already present)"
-sudo -u "$SVC_USER" "$APP_DIR/venv/bin/python" -m app.seed || true
-
 echo "==> Ownership"
 chown -R "$SVC_USER":"$SVC_USER" "$APP_DIR"
+
+echo "==> Seeding the database from data/seed/garden_produce.csv (skips rows already present)"
+# As the service user, so data/garden.db is owned by it from the start.
+if ! runuser -u "$SVC_USER" -- "$APP_DIR/venv/bin/python" -m app.seed; then
+  echo "!! Seeding failed. The app still runs; import the CSV from Settings instead."
+fi
 
 echo "==> systemd unit + env file"
 install -m 644 "$APP_DIR/deploy/garden.service" /etc/systemd/system/garden.service
