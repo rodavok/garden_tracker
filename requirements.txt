@@ -1,4 +1,6 @@
-fastapi
-uvicorn[standard]
-requests
-python-multipart
+# Compatible-release pins (~=): patch updates only, so a reinstall in the LXC
+# can't pull in a breaking FastAPI/Starlette release. Bump deliberately.
+fastapi~=0.142.2
+uvicorn[standard]~=0.54.0
+requests~=2.34
+python-multipart~=0.0.32

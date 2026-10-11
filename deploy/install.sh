@@ -41,8 +41,23 @@ if [ ! -f /etc/garden/garden.env ]; then
   install -m 600 "$APP_DIR/deploy/garden.env.example" /etc/garden/garden.env
   chown "$SVC_USER":"$SVC_USER" /etc/garden/garden.env
 fi
+echo "==> avahi (mDNS) tweaks for an unprivileged LXC"
+# Unprivileged Proxmox containers all map their UIDs onto the same host range,
+# so the 'avahi' user here is the same kernel UID as in every other container
+# running avahi (e.g. recipe_book). Avahi's default rlimit-nproc=3 is then
+# shared between them, and whichever starts second can fail to fork, so
+# garden.local intermittently stops resolving. Drop the limit.
+AVAHI_CONF=/etc/avahi/avahi-daemon.conf
+sed -i 's/^\s*rlimit-nproc\s*=/#rlimit-nproc=/' "$AVAHI_CONF"
+# Only announce on the container's LAN interface; avoids the self-echo
+# "host name conflict" that renames the box to garden-2.local.
+if ! grep -q '^\s*allow-interfaces\s*=' "$AVAHI_CONF"; then
+  sed -i '/^\[server\]/a allow-interfaces=eth0' "$AVAHI_CONF"
+fi
+
 systemctl daemon-reload
-systemctl enable --now avahi-daemon
+systemctl enable avahi-daemon
+systemctl restart avahi-daemon
 
 if [ "$(hostname)" != "garden" ]; then
   echo

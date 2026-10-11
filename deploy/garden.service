@@ -14,7 +14,9 @@ WorkingDirectory=/opt/garden
 EnvironmentFile=-/etc/garden/garden.env
 Environment=HOME=/home/garden
 
-ExecStart=/opt/garden/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 80
+# Open live-update (SSE) streams never finish on their own, so cap how long
+# shutdown waits for them; otherwise every restart stalls until systemd kills it.
+ExecStart=/opt/garden/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 80 --timeout-graceful-shutdown 3
 Restart=always
 RestartSec=3
 

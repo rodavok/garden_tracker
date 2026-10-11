@@ -6,8 +6,9 @@ with WAL so the phone and the desktop can hit it at once without fuss.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from . import config
 from .config import DB_PATH
@@ -69,16 +70,22 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect() -> sqlite3.Connection:
+@contextmanager
+def connect() -> Iterator[sqlite3.Connection]:
+    """A connection that is closed on exit. Writers call conn.commit() themselves;
+    anything uncommitted (e.g. after an exception) is rolled back on close."""
     conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
     with connect() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")   # persistent: stored in the db file
         conn.executescript(SCHEMA)
         defaults = {
             "lat": str(config.DEFAULT_LAT),
@@ -403,13 +410,12 @@ def delete_harvest(harvest_id: int) -> bool:
         return cur.rowcount > 0
 
 
-def harvest_exists(d: str, crop_id: int, weight_g: float) -> bool:
+def harvest_count_matching(d: str, crop_id: int, weight_g: float) -> int:
     with connect() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM harvests WHERE date = ? AND crop_id = ? AND ABS(weight_g - ?) < 0.001 LIMIT 1",
+        return conn.execute(
+            "SELECT COUNT(*) AS c FROM harvests WHERE date = ? AND crop_id = ? AND ABS(weight_g - ?) < 0.001",
             (d, crop_id, weight_g),
-        ).fetchone()
-    return row is not None
+        ).fetchone()["c"]
 
 
 def harvest_count() -> int:
@@ -501,6 +507,11 @@ def delete_weather(d: str) -> bool:
         cur = conn.execute("DELETE FROM weather WHERE date = ?", (d,))
         conn.commit()
         return cur.rowcount > 0
+
+
+def latest_weather_date() -> Optional[str]:
+    with connect() as conn:
+        return conn.execute("SELECT MAX(date) AS d FROM weather").fetchone()["d"]
 
 
 def weather_count() -> int:

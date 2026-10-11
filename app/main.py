@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Optional
@@ -30,6 +31,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    events.bind_loop(asyncio.get_running_loop())
     task = asyncio.create_task(weather.scheduler())
     yield
     task.cancel()
@@ -136,6 +138,8 @@ def create_crop(payload: CropCreate):
 def update_crop(crop_id: int, patch: CropUpdate):
     if not db.get_crop(crop_id):
         raise HTTPException(status_code=404, detail="Crop not found")
+    if patch.name is not None and not patch.name.strip():
+        raise HTTPException(status_code=400, detail="Crop name can't be blank")
     try:
         c = db.update_crop(crop_id, patch.model_dump(exclude_unset=True))
     except Exception as exc:
@@ -176,7 +180,12 @@ def update_variety(variety_id: int, patch: VarietyUpdate):
     if not db.get_variety(variety_id):
         raise HTTPException(status_code=404, detail="Variety not found")
     if patch.name is not None:
-        db.update_variety(variety_id, patch.name)
+        if not patch.name.strip():
+            raise HTTPException(status_code=400, detail="Variety name can't be blank")
+        try:
+            db.update_variety(variety_id, patch.name)
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="That crop already has a variety with that name")
     events.publish("crops", {})
     return db.get_variety(variety_id)
 
@@ -201,7 +210,7 @@ def create_planting(payload: PlantingCreate):
     variety_id = _resolve_variety(crop_id, payload.variety_id, payload.variety_name)
     sow = _date(payload.sow_date) if payload.sow_date else None
     tp = _date(payload.transplant_date) if payload.transplant_date else None
-    season = payload.season or int((tp or sow or date.today().isoformat())[:4])
+    season = payload.season or int((tp or sow or weather.today_local().isoformat())[:4])
     p = db.insert_planting({
         "crop_id": crop_id, "variety_id": variety_id, "season": season, "sow_date": sow,
         "transplant_date": tp, "plant_count": payload.plant_count,
@@ -220,8 +229,15 @@ def update_planting(planting_id: int, patch: PlantingUpdate):
     crop_id = data.get("crop_id", p["crop_id"])
     if "crop_id" in data:
         _resolve_crop(crop_id, None)
-        if crop_id != p["crop_id"] and "variety_id" not in data and "variety_name" not in data:
-            data["variety_id"] = None
+        if crop_id != p["crop_id"]:
+            if p["harvests"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"This planting has {p['harvests']} {p['crop_name']} harvest(s) linked; "
+                           "move or unlink them before changing its crop",
+                )
+            if "variety_id" not in data and "variety_name" not in data:
+                data["variety_id"] = None
     vname = data.pop("variety_name", None)
     if vname is not None or "variety_id" in data:
         data["variety_id"] = _resolve_variety(crop_id, data.get("variety_id"), vname)
@@ -380,7 +396,12 @@ def stats_overview():
 
 @app.get("/api/stats/season/{year}")
 def stats_season(year: int):
-    return analytics.season(year)
+    return analytics.season(year, weather.today_local())
+
+
+@app.get("/api/stats/pulse")
+def stats_pulse():
+    return analytics.pulse(weather.today_local())
 
 
 @app.get("/api/stats/cumulative")
@@ -447,5 +468,16 @@ def health():
 
 
 # ---------- static files (mounted last so /api wins) ----------
+class RevalidatingStaticFiles(StaticFiles):
+    """Without Cache-Control, browsers cache app.js heuristically and phones
+    keep running the old front-end after an update. `no-cache` still caches,
+    but checks the ETag first (a cheap 304 when nothing changed)."""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 if WEB_DIR.exists():
-    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+    app.mount("/", RevalidatingStaticFiles(directory=WEB_DIR, html=True), name="web")

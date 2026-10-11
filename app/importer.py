@@ -1,11 +1,16 @@
 """CSV import/export. The import accepts the Notion export format
-(Date, Crop, Weight (g)) plus optional Variety and Notes columns, and skips
-rows that already exist (same date, crop, and weight) so re-importing is safe.
+(Date, Crop, Weight (g)) plus optional Variety and Notes columns.
+
+Re-importing is safe: a row is skipped when the database already holds as many
+(date, crop, weight) matches as the file has seen so far. So two identical
+200 g pickings on the same day both import the first time, and neither
+imports again the second time.
 """
 from __future__ import annotations
 
 import csv
 import io
+from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -44,6 +49,7 @@ def import_csv(text: str) -> Dict[str, Any]:
         raise ValueError(f"CSV needs Date, Crop and Weight columns; got {headers}")
 
     added, skipped, errors = 0, 0, []
+    seen: Counter = Counter()
     for i, row in enumerate(reader, start=2):
         try:
             d = _norm_date(row[col_date])
@@ -52,7 +58,9 @@ def import_csv(text: str) -> Dict[str, Any]:
             if not crop_name:
                 raise ValueError("empty crop")
             crop = db.get_or_create_crop(crop_name)
-            if db.harvest_exists(d, crop["id"], weight):
+            key = (d, crop["id"], weight)
+            seen[key] += 1
+            if db.harvest_count_matching(*key) >= seen[key]:
                 skipped += 1
                 continue
             variety_id = None

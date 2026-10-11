@@ -101,8 +101,14 @@ def fetch_range(start: date, end: date) -> List[Dict[str, Any]]:
 
 
 def refresh_recent(days: int = 7) -> int:
+    """Refresh the last `days` days, reaching further back if there's a gap
+    since the newest stored day (e.g. the box was off for a fortnight)."""
     today = today_local()
-    rows = fetch_range(today - timedelta(days=days), today)
+    start = today - timedelta(days=days)
+    newest = db.latest_weather_date()
+    if newest and date.fromisoformat(newest) < start:
+        start = date.fromisoformat(newest)
+    rows = fetch_range(start, today)
     n = db.upsert_weather_auto(rows)
     db.set_setting("weather_last_fetch", db.now_iso())
     db.set_setting("weather_last_error", "")
@@ -155,26 +161,37 @@ async def _run(fn, *args):
         return None
 
 
+async def _catch_up() -> Optional[int]:
+    """Backfill if that hasn't completed yet, otherwise refresh the recent days."""
+    if not location():
+        return 0
+    if db.get_setting("backfill_done") != "1":
+        return await _run(backfill)
+    return await _run(refresh_recent, 7)
+
+
+RETRY_SECONDS = 30 * 60
+
+
 async def scheduler():
-    """Backfill once (if needed) then refresh the last week every morning."""
+    """Catch up at boot, then every morning. A failed fetch (network not up yet,
+    API down) is retried every half hour rather than waiting for tomorrow."""
     if not config.WEATHER_ENABLED:
         return
     await asyncio.sleep(2)  # let uvicorn finish booting first
-    if location():
-        if db.get_setting("backfill_done") != "1":
-            await _run(backfill)
-        else:
-            await _run(refresh_recent, 7)
+    ok = await _catch_up() is not None
     while True:
         now = datetime.now(_tz())
         nxt = now.replace(hour=config.WEATHER_REFRESH_HOUR, minute=5, second=0, microsecond=0)
         if nxt <= now:
             nxt += timedelta(days=1)
-        await asyncio.sleep((nxt - now).total_seconds())
-        if location():
-            await _run(refresh_recent, 7)
+        wait = (nxt - now).total_seconds()
+        if not ok:
+            wait = min(wait, RETRY_SECONDS)
+        await asyncio.sleep(wait)
+        ok = await _catch_up() is not None
 
 
 def kick(fn, *args) -> None:
-    """Fire-and-forget a fetch from a request handler."""
-    asyncio.get_event_loop().create_task(_run(fn, *args))
+    """Fire-and-forget a fetch from a request handler (any thread)."""
+    events.spawn(_run(fn, *args))

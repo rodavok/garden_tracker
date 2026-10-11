@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
+from statistics import median
 from typing import Any, Dict, List, Optional
 
 from . import db
@@ -90,7 +91,37 @@ def _gdd(tmax: float, tmin: float) -> float:
     return max(0.0, (tmax + tmin) / 2 - GDD_BASE_C)
 
 
-def season(year: int) -> Dict[str, Any]:
+def _same_day(d: date, year: int) -> date:
+    """d's month/day in another year (Feb 29 -> Feb 28)."""
+    try:
+        return d.replace(year=year)
+    except ValueError:
+        return d.replace(year=year, day=28)
+
+
+def _prev_season(year: int, today: date) -> Optional[Dict[str, Any]]:
+    """Last season's total, plus its total up to today's date when `year` is
+    still in progress, so a half-finished season isn't compared to a full one."""
+    prev = year - 1
+    with db.connect() as conn:
+        total = conn.execute(
+            "SELECT SUM(weight_g) AS g FROM harvests WHERE substr(date,1,4) = ?", (str(prev),)
+        ).fetchone()["g"]
+        if total is None:
+            return None
+        in_progress = year == today.year
+        to_date = total
+        if in_progress:
+            cutoff = _same_day(today, prev).isoformat()
+            to_date = conn.execute(
+                "SELECT COALESCE(SUM(weight_g),0) AS g FROM harvests WHERE substr(date,1,4) = ? AND date <= ?",
+                (str(prev), cutoff),
+            ).fetchone()["g"]
+    return {"season": prev, "total_g": round(total, 1), "to_date_g": round(to_date, 1), "partial": in_progress}
+
+
+def season(year: int, today: Optional[date] = None) -> Dict[str, Any]:
+    today = today or date.today()
     ys = str(year)
     harvests = db.list_harvests(season=year)
     crops = {c["id"]: c for c in db.list_crops()}
@@ -135,6 +166,7 @@ def season(year: int) -> Dict[str, Any]:
         "first_date": min(dates) if dates else None,
         "last_date": max(dates) if dates else None,
         "top_crop": ({"name": crop_rows[0]["name"], "total_g": crop_rows[0]["total_g"]} if crop_rows else None),
+        "prev": _prev_season(year, today),
     }
 
     return {
@@ -200,4 +232,76 @@ def weather_summary(start: str, end: str) -> Dict[str, Any]:
         "coldest": {"date": coldest["date"], "tmin_c": coldest["tmin_c"]} if coldest else None,
         "wettest": {"date": wettest["date"], "precip_mm": wettest["precip_mm"]} if wettest else None,
         "monthly": monthly_rows,
+    }
+
+
+def pulse(today: date) -> Dict[str, Any]:
+    """Season-so-far snapshot for the Log page: totals vs last year to the same
+    date, plus per-crop recency so you know what's due for a look."""
+    year, prev = today.year, today.year - 1
+    cutoff_prev = _same_day(today, prev).isoformat()
+    t = today.isoformat()
+    week_start = (today - timedelta(days=6)).isoformat()
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT h.crop_id, h.date, h.weight_g, c.name, c.color, c.archived FROM harvests h "
+            "JOIN crops c ON c.id = h.crop_id WHERE substr(h.date,1,4) IN (?, ?) ORDER BY h.date",
+            (str(year), str(prev)),
+        ).fetchall()
+        recent = conn.execute(
+            "SELECT crop_id, weight_g FROM ("
+            "  SELECT crop_id, weight_g, ROW_NUMBER() OVER (PARTITION BY crop_id ORDER BY date DESC, id DESC) AS rn"
+            "  FROM harvests) WHERE rn <= 12"
+        ).fetchall()
+
+    typical: Dict[int, List[float]] = defaultdict(list)
+    for r in recent:
+        typical[r["crop_id"]].append(r["weight_g"])
+
+    crops: Dict[int, Dict[str, Any]] = {}
+    tot = {"season_g": 0.0, "prev_to_date_g": 0.0, "prev_total_g": 0.0, "week_g": 0.0, "today_g": 0.0, "today_picks": 0}
+    dates_by_crop: Dict[int, List[str]] = defaultdict(list)
+    for r in rows:
+        c = crops.setdefault(r["crop_id"], {
+            "crop_id": r["crop_id"], "name": r["name"], "color": r["color"], "archived": bool(r["archived"]),
+            "season_g": 0.0, "picks": 0, "prev_to_date_g": 0.0, "prev_total_g": 0.0, "last_date": None,
+        })
+        g = r["weight_g"]
+        if r["date"][:4] == str(year):
+            c["season_g"] += g; c["picks"] += 1; c["last_date"] = r["date"]
+            tot["season_g"] += g
+            if r["date"] >= week_start:
+                tot["week_g"] += g
+            if r["date"] == t:
+                tot["today_g"] += g; tot["today_picks"] += 1
+            if not dates_by_crop[r["crop_id"]] or dates_by_crop[r["crop_id"]][-1] != r["date"]:
+                dates_by_crop[r["crop_id"]].append(r["date"])
+        else:
+            c["prev_total_g"] += g; tot["prev_total_g"] += g
+            if r["date"] <= cutoff_prev:
+                c["prev_to_date_g"] += g; tot["prev_to_date_g"] += g
+
+    out = []
+    for cid, c in crops.items():
+        ds = dates_by_crop.get(cid, [])
+        gaps = [(date.fromisoformat(b) - date.fromisoformat(a)).days for a, b in zip(ds, ds[1:])]
+        c["pick_gap_days"] = median(gaps) if len(gaps) >= 2 else None
+        c["days_since"] = (today - date.fromisoformat(c["last_date"])).days if c["last_date"] else None
+        # "Due" = picked in the last fortnight (so probably still producing), and it's been
+        # noticeably longer than this crop's usual interval between picks.
+        c["due"] = bool(
+            c["pick_gap_days"] and c["days_since"] is not None
+            and c["days_since"] <= 14 and c["days_since"] >= max(2, 1.5 * c["pick_gap_days"])
+        )
+        w = typical.get(cid)
+        c["typical_g"] = round(median(w), 1) if w else None
+        for k in ("season_g", "prev_to_date_g", "prev_total_g"):
+            c[k] = round(c[k], 1)
+        out.append(c)
+    out.sort(key=lambda c: (-c["season_g"], -c["prev_to_date_g"]))
+    typical_all = {str(cid): round(median(w), 1) for cid, w in typical.items()}
+    return {
+        "season": year, "prev_season": prev, "today": t,
+        **{k: round(v, 1) if isinstance(v, float) else v for k, v in tot.items()},
+        "crops": out, "typical_g": typical_all,
     }

@@ -8,7 +8,13 @@ const U = { metric: (localStorage.getItem("units") || "metric") === "metric" };
 
 /* ---------- helpers ---------- */
 function esc(s) { return (s ?? "").toString().replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
-function toast(m) { const t = $("#toast"); t.textContent = m; t.classList.add("show"); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), 2400); }
+/* toast("Saved") or toast("Deleted", { label: "Undo", run: async () => … }) */
+function toast(m, action) {
+  const t = $("#toast"); clearTimeout(t._t);
+  t.innerHTML = `<span>${esc(m)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ""}`;
+  if (action) t.querySelector("button").onclick = guard(async () => { t.classList.remove("show"); await action.run(); });
+  t.classList.add("show"); t._t = setTimeout(() => t.classList.remove("show"), action ? 8000 : 2400);
+}
 function todayISO() { const d = new Date(); return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-"); }
 function pd(iso) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d); }
 function fmtD(iso, withYear) { if (!iso) return "—"; return pd(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", ...(withYear ? { year: "numeric" } : {}) }); }
@@ -81,8 +87,10 @@ const VIEWS = [
 ];
 function renderNav() {
   const icon = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
-  $("#tabs").innerHTML = VIEWS.map(([k, l]) => `<button role="tab" data-v="${k}" aria-selected="${state.view === k}">${l}</button>`).join("");
-  $("#bottomnav").innerHTML = VIEWS.map(([k, l, d]) => `<button data-v="${k}" aria-selected="${state.view === k}">${icon(d)}${l}</button>`).join("");
+  const nav = VIEWS.filter(([k]) => k !== "settings");
+  $("#tabs").innerHTML = nav.map(([k, l]) => `<button role="tab" data-v="${k}" aria-selected="${state.view === k}">${l}</button>`).join("");
+  $("#bottomnav").innerHTML = nav.map(([k, l, d]) => `<button data-v="${k}" aria-selected="${state.view === k}">${icon(d)}${l}</button>`).join("");
+  $("#gear").innerHTML = icon(VIEWS.find(([k]) => k === "settings")[2]); $("#gear").setAttribute("aria-pressed", state.view === "settings");
   document.querySelectorAll("[data-v]").forEach(b => b.onclick = () => { state.view = b.dataset.v; location.hash = b.dataset.v; render(); });
 }
 const RENDER = { log: renderLog, harvests: renderHarvests, weather: renderWeather, plantings: renderPlantings, analyze: renderAnalyze, settings: renderSettings };
@@ -108,7 +116,7 @@ function openModal({ title, body, submitLabel = "Save", onSubmit, extra = [], da
   const close = () => { root.innerHTML = ""; };
   $("#m-cancel").onclick = close;
   $("#modal").onclick = e => { if (e.target.id === "modal") close(); };
-  if (danger) $("#m-danger").onclick = guard(async () => { if (confirm(danger.confirm || "Are you sure?")) { await danger.run(); close(); } });
+  if (danger) $("#m-danger").onclick = guard(async () => { if (danger.confirm === false || confirm(danger.confirm || "Are you sure?")) { await danger.run(); close(); } });
   extra.forEach((x, i) => root.querySelector(`[data-x="${i}"]`).onclick = guard(async () => { await x.run(); close(); }));
   $("#mform").onsubmit = guard(async e => { e.preventDefault(); const fd = Object.fromEntries(new FormData(e.target).entries()); await onSubmit(fd, e.target); close(); });
   const first = root.querySelector("input:not([type=hidden]),select,textarea"); if (first) first.focus();
@@ -143,85 +151,205 @@ function resolveCV(fd, cropName, varName) {
 }
 
 /* ===================== LOG ===================== */
-let logForm = { date: todayISO(), crop_id: null, variety_id: "", planting_id: "" };
-async function renderLog() {
-  const [recent, plantings, wx] = await Promise.all([api("/harvests?limit=12"), api("/plantings"), api("/weather/" + logForm.date)]);
-  if (!logForm.crop_id && !state.crops.length) logForm.crop_id = null;
+/* Phone-first: tap a crop, punch the weight on the keypad, Save. The view
+   fetches once (loadLog) and redraws locally (drawLog) on taps, so picking a
+   crop or typing a digit never waits on the network. */
+const COARSE = matchMedia("(pointer: coarse)").matches;
+let logForm = { date: todayISO(), crop_id: null, variety_id: "", planting_id: "", w: "", notes: "", noteOpen: false };
+let logData = null;
+
+async function renderLog() { await loadLog(); drawLog(); }
+async function loadLog() {
+  const [recent, plantings, wx, pulse] = await Promise.all([api("/harvests?limit=12"), api("/plantings"), api("/weather/" + logForm.date), api("/stats/pulse")]);
+  logData = { recent, plantings, wx, pulse };
+}
+function dateChipLabel(iso) {
+  const t = todayISO(); if (iso === t) return "Today";
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  if (iso === [y.getFullYear(), String(y.getMonth() + 1).padStart(2, "0"), String(y.getDate()).padStart(2, "0")].join("-")) return "Yesterday";
+  return fmtDW(iso);
+}
+function logWeightG() { return toG(COARSE ? logForm.w : ($("#f-weight")?.value ?? "")); }
+function weightHint() {
+  const crop = cropById(logForm.crop_id); const el = $("#w-hint"); if (!el) return;
+  const typ = crop ? logData.pulse.typical_g[String(crop.id)] : null;
+  const g = logWeightG();
+  if (typ && g > 0 && g >= 8 * typ && g > 300) { el.className = "hint warn"; el.textContent = `That's ${Math.round(g / typ)}× a typical ${crop.name.toLowerCase()} pick (${fmtW(typ)}). Right units?`; }
+  else { el.className = "hint"; el.textContent = typ ? `Typical pick: ${fmtW(typ)}` : ""; }
+}
+function keypadHTML() {
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"];
+  return `<div class="keypad">${keys.map(k => `<button type="button" data-k="${k}" ${k === "⌫" ? 'aria-label="Delete digit"' : ""}>${k}</button>`).join("")}</div>`;
+}
+function pressKey(k) {
+  let w = logForm.w;
+  if (k === "⌫") w = w.slice(0, -1);
+  else if (k === "C") w = "";
+  else if (k === ".") { if (!w.includes(".")) w = (w || "0") + "."; }
+  else if (w.length < 7 && !/\.\d$/.test(w)) w = (w === "0" ? "" : w) + k;   // one decimal place is plenty
+  logForm.w = w;
+  const d = $("#f-wval"); if (d) { d.textContent = w || "0"; d.classList.toggle("muted", !w); }
+  weightHint();
+}
+
+function drawLog() {
+  const { recent, plantings, wx, pulse } = logData;
   const active = state.crops.filter(c => !c.archived).sort((a, b) => (b.last_harvest || "").localeCompare(a.last_harvest || "") || b.harvests - a.harvests || a.name.localeCompare(b.name));
   const crop = cropById(logForm.crop_id);
   const vs = crop ? state.varieties.filter(v => v.crop_id === crop.id) : [];
   const ps = crop ? plantings.filter(p => p.crop_id === crop.id && String(p.season) === logForm.date.slice(0, 4)) : [];
   const grouped = {}; recent.forEach(h => (grouped[h.date] = grouped[h.date] || []).push(h));
+  const dueIds = new Set(pulse.crops.filter(c => c.due).map(c => c.crop_id));
+  const showNote = logForm.noteOpen || logForm.notes || !COARSE;
+
   $("#view").innerHTML = `
   <div class="two">
-  <div class="card">
-    <h2>Log a harvest <button class="btn ghost" id="repeat" title="Copy crop, variety and planting from the last entry">↺ Repeat last</button></h2>
-    <label class="f">Date</label>
-    <input type="date" id="f-date" value="${logForm.date}" max="${todayISO()}">
-    <label class="f">Crop</label>
+  <div class="card logcard">
+    <h2>Log a harvest
+      <span class="row" style="gap:4px">
+        <label class="datechip" title="Change date">${dateChipLabel(logForm.date)} ▾<input type="date" id="f-date" value="${logForm.date}" max="${todayISO()}" aria-label="Harvest date"></label>
+        <button class="btn ghost" id="repeat" title="Copy crop, variety and planting from the last entry">↺ Repeat</button>
+      </span>
+    </h2>
     <div class="chips" id="cropchips">
-      ${active.map(c => `<button type="button" class="chip" data-id="${c.id}" aria-pressed="${c.id === logForm.crop_id}"><span class="dot" style="--c:${cropColor(c)}"></span>${esc(c.name)}</button>`).join("")}
-      <button type="button" class="chip add" id="newcrop">+ New crop</button>
+      ${active.map(c => `<button type="button" class="chip" data-id="${c.id}" aria-pressed="${c.id === logForm.crop_id}"><span class="dot" style="--c:${cropColor(c)}"></span>${esc(c.name)}${dueIds.has(c.id) ? `<span class="due" title="Usually picked more often than this">•</span>` : ""}</button>`).join("")}
+      <button type="button" class="chip add" id="newcrop">+ New</button>
     </div>
     <div id="newcropbox" class="hidden inl" style="margin-top:8px"><input type="text" id="f-newcrop" placeholder="Crop name" autocapitalize="words"><button class="btn" id="f-newcrop-ok" style="flex:0 0 auto">Add</button></div>
     ${crop ? `
-    <label class="f">Variety <span class="muted" style="font-weight:400">(optional)</span></label>
-    <select id="f-variety"><option value="">— none —</option>${vs.map(v => `<option value="${v.id}" ${String(v.id) === String(logForm.variety_id) ? "selected" : ""}>${esc(v.name)}</option>`).join("")}<option value="__new">+ New variety…</option></select>
-    <input type="text" id="f-variety-new" class="hidden" placeholder="Variety name" style="margin-top:6px" autocapitalize="words">
-    ${ps.length ? `<label class="f">Planting <span class="muted" style="font-weight:400">(optional)</span></label>
-    <select id="f-planting"><option value="">— none —</option>${ps.map(p => `<option value="${p.id}" ${String(p.id) === String(logForm.planting_id) ? "selected" : ""}>${esc(plantingLabel(p))}</option>`).join("")}</select>` : ""}
-    ` : ""}
+    <div class="inl opts">
+      <div><select id="f-variety" aria-label="Variety"><option value="">Any variety</option>${vs.map(v => `<option value="${v.id}" ${String(v.id) === String(logForm.variety_id) ? "selected" : ""}>${esc(v.name)}</option>`).join("")}<option value="__new">+ New variety…</option></select>
+        <input type="text" id="f-variety-new" class="hidden" placeholder="Variety name" style="margin-top:6px" autocapitalize="words"></div>
+      ${ps.length ? `<div><select id="f-planting" aria-label="Planting"><option value="">No planting</option>${ps.map(p => `<option value="${p.id}" ${String(p.id) === String(logForm.planting_id) ? "selected" : ""}>${esc(plantingLabel(p))}</option>`).join("")}</select></div>` : ""}
+      ${showNote ? "" : `<button type="button" class="btn" id="f-addnote" style="flex:0 0 auto" title="Add a note">+ Note</button>`}
+    </div>
+    ${showNote ? `<input type="text" id="f-notes" placeholder="Note, e.g. first ripe one, some blossom-end rot" value="${esc(logForm.notes)}" style="margin-top:8px">` : ""}` : ""}
+    ${COARSE ? `
+    <div class="wdisp ${crop ? "" : "off"}"><span id="f-wval" class="${logForm.w ? "" : "muted"}">${esc(logForm.w || "0")}</span><span class="u">${unitW()}</span></div>
+    <div id="w-hint" class="hint"></div>
+    ${crop ? keypadHTML() : ""}` : `
     <label class="f">Weight</label>
-    <div class="inl"><input type="number" id="f-weight" inputmode="decimal" step="${U.metric ? "1" : "0.1"}" min="0" placeholder="0" ${crop ? "" : "disabled"}><span class="unit">${unitW()}</span></div>
-    <label class="f">Notes <span class="muted" style="font-weight:400">(optional)</span></label>
-    <input type="text" id="f-notes" placeholder="e.g. first ripe one, some blossom-end rot">
+    <div class="inl"><input type="number" id="f-weight" inputmode="decimal" step="${U.metric ? "1" : "0.1"}" min="0" placeholder="0" value="${esc(logForm.w)}" ${crop ? "" : "disabled"}><span class="unit">${unitW()}</span></div>
+    <div id="w-hint" class="hint"></div>`}
     <button class="btn primary big" id="f-save" ${crop ? "" : "disabled"}>${crop ? "Save " + esc(crop.name) : "Pick a crop"}</button>
   </div>
-  <div>
-    <div class="card" style="margin-top:0">
+  <div class="stack">
+    ${pulseCard(pulse)}
+    <div class="card">
       <h2>Weather · ${fmtDW(logForm.date)} <button class="btn ghost" id="wx-edit">${wx ? "Edit" : "Add"}</button></h2>
       ${wx ? `<div class="wx"><div class="t">${fmtT(wx.tmax_c)} <span>/ ${fmtT(wx.tmin_c)}</span></div><div>${fmtP(wx.precip_mm)} rain</div><div>${fmtSun(wx.sunshine_s)} sun</div>${wx.source === "manual" ? `<span class="badge">manual</span>` : ""}</div>${wx.notes ? `<p class="small" style="margin:8px 0 0">${esc(wx.notes)}</p>` : ""}`
-      : `<p class="muted small" style="margin:0">No weather for this day yet${state.settings.weather_enabled ? " — it'll be fetched automatically, or add it now." : "."}</p>`}
+      : `<p class="muted small" style="margin:0">No weather for this day yet${state.settings.weather_enabled ? ". It's fetched automatically, or add it now." : "."}</p>`}
     </div>
     <div class="card">
-      <h2>Recent entries <a class="small" href="#harvests" onclick="state.view='harvests';render();return false;">All harvests →</a></h2>
-      ${recent.length ? Object.keys(grouped).map(d => `<div class="daysep">${fmtDW(d)} · ${fmtW(grouped[d].reduce((a, h) => a + h.weight_g, 0))}</div>${grouped[d].map(entryHTML).join("")}`).join("") : `<p class="empty">Nothing logged yet.</p>`}
+      <h2>Recent entries <a class="small" href="#harvests">All harvests →</a></h2>
+      ${recent.length ? Object.keys(grouped).map(d => `<div class="daysep">${fmtDW(d)} · ${fmtW(grouped[d].reduce((a, h) => a + h.weight_g, 0))}</div>${grouped[d].map(h => entryHTML(h)).join("")}`).join("") : `<p class="empty">Nothing logged yet.</p>`}
     </div>
   </div></div>`;
 
-  $("#f-date").onchange = e => { logForm.date = e.target.value || todayISO(); renderLog(); };
-  document.querySelectorAll("#cropchips .chip[data-id]").forEach(b => b.onclick = () => { logForm.crop_id = Number(b.dataset.id); logForm.variety_id = ""; logForm.planting_id = ""; renderLog().then(() => $("#f-weight")?.focus()); });
+  const dateIn = $("#f-date");
+  dateIn.onclick = () => { try { dateIn.showPicker(); } catch (e) { } };
+  dateIn.onchange = guard(async e => { logForm.date = e.target.value || todayISO(); logForm.planting_id = ""; await renderLog(); });
+  document.querySelectorAll("#cropchips .chip[data-id]").forEach(b => b.onclick = () => selectLogCrop(Number(b.dataset.id)));
   $("#newcrop").onclick = () => { $("#newcropbox").classList.toggle("hidden"); $("#f-newcrop").focus(); };
-  const addCrop = guard(async () => { const name = $("#f-newcrop").value.trim(); if (!name) return; const c = await jpost("/crops", { name }); await loadBase(); logForm.crop_id = c.id; logForm.variety_id = ""; renderLog(); });
+  const addCrop = guard(async () => { const name = $("#f-newcrop").value.trim(); if (!name) return; const c = await jpost("/crops", { name }); await loadBase(); selectLogCrop(c.id); });
   $("#f-newcrop-ok").onclick = addCrop; $("#f-newcrop").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); addCrop(); } };
   const vsel = $("#f-variety"); if (vsel) vsel.onchange = () => { $("#f-variety-new").classList.toggle("hidden", vsel.value !== "__new"); if (vsel.value === "__new") $("#f-variety-new").focus(); logForm.variety_id = vsel.value; };
   const psel = $("#f-planting"); if (psel) psel.onchange = () => logForm.planting_id = psel.value;
-  $("#f-weight")?.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("#f-save").click(); } });
-  $("#f-save").onclick = guard(async () => {
-    const g = toG($("#f-weight").value);
-    if (isNaN(g) || g <= 0) { toast("Enter a weight"); $("#f-weight").focus(); return; }
-    const body = { date: logForm.date, crop_id: logForm.crop_id, weight_g: Math.round(g * 10) / 10, notes: $("#f-notes").value.trim() };
-    const vv = $("#f-variety")?.value;
-    if (vv === "__new") { const n = $("#f-variety-new").value.trim(); if (n) body.variety_name = n; } else if (vv) body.variety_id = Number(vv);
-    const pv = $("#f-planting")?.value; if (pv) body.planting_id = Number(pv);
-    const h = await jpost("/harvests", body);
-    toast(`Saved ${fmtW(h.weight_g)} ${h.crop_name}`);
-    if (body.variety_name) { await loadBase(); logForm.variety_id = h.variety_id; }
-    await renderLog(); $("#f-weight").focus();
-  });
+  const win = $("#f-weight"); if (win) { win.oninput = () => { logForm.w = win.value; weightHint(); }; win.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); $("#f-save").click(); } }; }
+  document.querySelectorAll(".keypad [data-k]").forEach(b => b.onclick = () => pressKey(b.dataset.k));
+  const kb = document.querySelector('.keypad [data-k="⌫"]'); if (kb) { let t; kb.onpointerdown = () => { t = setTimeout(() => pressKey("C"), 500); }; kb.onpointerup = kb.onpointerleave = () => clearTimeout(t); }
+  const notes = $("#f-notes"); if (notes) notes.oninput = () => logForm.notes = notes.value;
+  const addNote = $("#f-addnote"); if (addNote) addNote.onclick = () => { logForm.noteOpen = true; drawLog(); $("#f-notes").focus(); };
+  $("#f-save").onclick = guard(saveHarvest);
   $("#repeat").onclick = guard(async () => {
     const last = await api("/harvests/last"); if (!last) { toast("No previous entry"); return; }
-    logForm.crop_id = last.crop_id; logForm.variety_id = last.variety_id || ""; logForm.planting_id = last.planting_id || "";
-    await renderLog(); $("#f-weight").focus();
+    Object.assign(logForm, { crop_id: last.crop_id, variety_id: last.variety_id || "", planting_id: last.planting_id || "" });
+    drawLog(); $("#f-weight")?.focus();
   });
   $("#wx-edit").onclick = () => weatherModal(logForm.date, wx, renderLog);
-  document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => harvestModal(Number(b.dataset.edit), renderLog));
-  document.querySelectorAll("[data-del]").forEach(b => b.onclick = guard(async () => { if (!confirm("Delete this harvest?")) return; await jdel("/harvests/" + b.dataset.del); toast("Deleted"); renderLog(); }));
+  document.querySelectorAll(".pulse-crop[data-id]").forEach(r => r.onclick = () => { selectLogCrop(Number(r.dataset.id)); window.scrollTo({ top: 0, behavior: "smooth" }); });
+  wireEntries(renderLog);
+  weightHint();
+}
+function selectLogCrop(id) {
+  if (logForm.crop_id !== id) Object.assign(logForm, { crop_id: id, variety_id: "", planting_id: "" });
+  drawLog(); $("#f-weight")?.focus();
+}
+async function saveHarvest() {
+  const g = logWeightG();
+  if (isNaN(g) || g <= 0) { toast("Enter a weight"); $("#f-weight")?.focus(); return; }
+  const body = { date: logForm.date, crop_id: logForm.crop_id, weight_g: Math.round(g * 10) / 10, notes: ($("#f-notes")?.value || "").trim() };
+  const vv = $("#f-variety")?.value;
+  if (vv === "__new") { const n = $("#f-variety-new").value.trim(); if (n) body.variety_name = n; } else if (vv) body.variety_id = Number(vv);
+  const pv = $("#f-planting")?.value; if (pv) body.planting_id = Number(pv);
+  const h = await jpost("/harvests", body);
+  Object.assign(logForm, { w: "", notes: "", noteOpen: false });
+  if (body.variety_name) logForm.variety_id = h.variety_id;
+  toast(`Saved ${fmtW(h.weight_g)} ${h.crop_name}`, { label: "Undo", run: async () => { await jdel("/harvests/" + h.id); toast("Removed"); await loadBase(); if (state.view === "log") renderLog(); } });
+  await loadBase(); await renderLog(); $("#f-weight")?.focus();
+}
+
+/* Season-so-far card: totals vs last year to the same date, and per crop. */
+function pulseCard(p) {
+  const prev = p.prev_total_g > 0;
+  const pct = prev && p.prev_to_date_g > 0 ? (p.season_g - p.prev_to_date_g) / p.prev_to_date_g * 100 : null;
+  const crops = p.crops.filter(c => !c.archived && (c.season_g > 0 || c.prev_to_date_g > 0));
+  if (!p.season_g && !prev) return "";
+  const maxG = Math.max(1, ...crops.map(c => Math.max(c.season_g, c.prev_to_date_g)));
+  const since = d => d == null ? "" : d === 0 ? "today" : d === 1 ? "yesterday" : d + "d ago";
+  const shown = state.pulseAll ? crops : crops.slice(0, 6);
+  return `<div class="card pulsecard">
+    <h2>${p.season} so far ${prev ? `<span class="sub">vs ${p.prev_season} by this date</span>` : ""}</h2>
+    <div class="pulse">
+      <div class="lead"><div class="v">${fmtW(p.season_g)}</div>
+        ${pct != null ? `<div class="d ${pct >= 0 ? "up" : "down"}">${pct >= 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(0)}% <span class="muted">(${fmtW(p.prev_to_date_g)})</span></div>` : (prev ? `<div class="d muted">${p.prev_season}: nothing yet by now</div>` : "")}
+      </div>
+      <div class="mini"><b>${fmtW(p.week_g)}</b><span>last 7 days</span></div>
+      <div class="mini"><b>${fmtW(p.today_g)}</b><span>today${p.today_picks ? " · " + plural(p.today_picks, "pick") : ""}</span></div>
+    </div>
+    ${prev ? `<div class="progress" title="${fmtW(p.season_g)} of ${fmtW(p.prev_total_g)}"><i style="width:${Math.min(100, p.season_g / p.prev_total_g * 100).toFixed(1)}%"></i></div>
+    <div class="small muted" style="margin-top:4px">${Math.round(p.season_g / p.prev_total_g * 100)}% of ${p.prev_season}'s full-season ${fmtW(p.prev_total_g)}</div>` : ""}
+    ${crops.length ? `<div class="pulse-crops">${shown.map(c => `
+      <button type="button" class="pulse-crop" data-id="${c.crop_id}" title="Log ${esc(c.name)}">
+        <span class="nm"><span class="dot" style="--c:${cropColor(c.color)}"></span>${esc(c.name)}</span>
+        <span class="bars">
+          <i class="cur" style="--c:${cropColor(c.color)};width:${(c.season_g / maxG * 100).toFixed(1)}%"></i>
+          ${prev ? `<i class="prev" style="width:${(c.prev_to_date_g / maxG * 100).toFixed(1)}%"></i>` : ""}
+        </span>
+        <span class="g">${fmtW(c.season_g)}</span>
+        <span class="since ${c.due ? "due" : ""}">${c.due ? "check · " : ""}${since(c.days_since) || "—"}</span>
+      </button>`).join("")}</div>
+      ${crops.length > 6 ? `<button type="button" class="btn ghost small" id="pulse-more">${state.pulseAll ? "Show fewer" : `Show all ${crops.length}`}</button>` : ""}
+      ${prev ? `<div class="legend small"><span><i style="--c:var(--leaf)"></i>${p.season}</span><span><i class="ghostbar"></i>${p.prev_season} by this date</span><span class="muted">Tap a crop to log it</span></div>` : ""}` : ""}
+  </div>`;
+}
+document.addEventListener("click", e => { if (e.target.id === "pulse-more") { state.pulseAll = !state.pulseAll; drawLog(); } });
+/* Hardware keyboard on the keypad layout (tablets with keyboards, testing on desktop). */
+document.addEventListener("keydown", e => {
+  if (!COARSE || state.view !== "log" || $("#modal") || !logForm.crop_id || /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName || "")) return;
+  if (/^[0-9.]$/.test(e.key)) { pressKey(e.key); e.preventDefault(); }
+  else if (e.key === "Backspace") { pressKey("⌫"); e.preventDefault(); }
+  else if (e.key === "Enter") { $("#f-save")?.click(); e.preventDefault(); }
+});
+
+/* Edit/delete buttons on entry rows. Delete is immediate, with Undo. */
+function wireEntries(after) {
+  document.querySelectorAll("[data-edit]").forEach(b => b.onclick = e => { e.stopPropagation(); harvestModal(Number(b.dataset.edit), after); });
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = guard(async e => { e.stopPropagation(); await deleteHarvestWithUndo(Number(b.dataset.del), after); }));
+}
+async function deleteHarvestWithUndo(id, after) {
+  const h = await api("/harvests/" + id);
+  await jdel("/harvests/" + id);
+  toast(`Deleted ${fmtW(h.weight_g)} ${h.crop_name}`, { label: "Undo", run: async () => {
+    await jpost("/harvests", { date: h.date, crop_id: h.crop_id, variety_id: h.variety_id, planting_id: h.planting_id, weight_g: h.weight_g, notes: h.notes });
+    toast("Restored"); await loadBase(); render();
+  } });
+  await loadBase(); after();
 }
 function plantingLabel(p) { return [p.variety_name, p.location, p.plant_count ? plural(p.plant_count, "plant") : "", p.transplant_date ? "set out " + fmtD(p.transplant_date) : (p.sow_date ? "sown " + fmtD(p.sow_date) : "")].filter(Boolean).join(" · ") || ("Planting #" + p.id); }
 function entryHTML(h) {
   return `<div class="entry"><span class="dot" style="--c:${cropColor(cropById(h.crop_id))}"></span>
-    <div class="n"><div>${esc(h.crop_name)}${h.variety_name ? ` <span class="muted">· ${esc(h.variety_name)}</span>` : ""}</div>${h.notes ? `<small>${esc(h.notes)}</small>` : ""}</div>
+    <div class="n"><div>${esc(h.crop_name)}${h.variety_name ? ` <span class="muted">· ${esc(h.variety_name)}</span>` : ""}</div>${h.notes || h.planting_id ? `<small>${h.planting_id ? `<span class="badge">planting</span> ` : ""}${esc(h.notes)}</small>` : ""}</div>
     <span class="w">${fmtW(h.weight_g)}</span>
     <button class="btn ghost" data-edit="${h.id}" title="Edit">✎</button><button class="btn ghost" data-del="${h.id}" title="Delete">✕</button></div>`;
 }
@@ -237,7 +365,7 @@ async function harvestModal(id, after) {
     <label class="f">Notes</label><input type="text" name="notes" value="${esc(h.notes)}">`;
   openModal({
     title: "Edit harvest", body,
-    danger: { label: "Delete", confirm: "Delete this harvest?", run: async () => { await jdel("/harvests/" + id); toast("Deleted"); after(); } },
+    danger: { label: "Delete", confirm: false, run: () => deleteHarvestWithUndo(id, after) },
     onSubmit: async fd => {
       const cv = resolveCV(fd, "crop", "variety");
       const patch = { date: fd.date, weight_g: Math.round(toG(fd.weight) * 10) / 10, notes: fd.notes.trim(), planting_id: fd.planting_id ? Number(fd.planting_id) : null, ...cv };
@@ -249,35 +377,45 @@ async function harvestModal(id, after) {
 }
 
 /* ===================== HARVESTS ===================== */
-let hv = { season: "", crop: "" };
+let hv = { season: "", crop: "", q: "" };
+let hvRows = [];
 async function renderHarvests() {
   if (hv.season === "" && state.seasons.length) hv.season = String(state.season);
   const q = new URLSearchParams(); if (hv.season) q.set("season", hv.season); if (hv.crop) q.set("crop_id", hv.crop);
-  const rows = await api("/harvests?" + q);
-  const total = rows.reduce((a, h) => a + h.weight_g, 0);
+  hvRows = await api("/harvests?" + q);
   $("#view").innerHTML = `<div class="card">
-    <h2>Harvests <span class="sub">${rows.length} entries · ${fmtW(total)}</span></h2>
+    <h2>Harvests <span class="sub" id="hv-sum"></span></h2>
     <div class="ctrl">
       <select id="hv-season"><option value="">All seasons</option>${state.seasons.map(s => `<option value="${s}" ${String(s) === hv.season ? "selected" : ""}>${s}</option>`).join("")}</select>
       <select id="hv-crop"><option value="">All crops</option>${state.crops.map(c => `<option value="${c.id}" ${String(c.id) === hv.crop ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
-      <span class="grow"></span>
-      <a class="btn" href="${API}/export.csv" download>Export CSV</a>
-      <label class="btn">Import CSV<input type="file" id="hv-import" accept=".csv,text/csv" class="hidden"></label>
+      <input type="search" id="hv-q" placeholder="Search notes, varieties…" value="${esc(hv.q)}" class="grow" style="width:auto;min-height:38px;padding:6px 10px">
     </div>
-    <div class="scrollx" style="margin-top:10px"><table><thead><tr><th>Date</th><th>Crop</th><th>Variety</th><th class="r">Weight</th><th>Notes</th><th></th></tr></thead><tbody>
-      ${rows.map(h => `<tr class="click" data-edit="${h.id}"><td class="num">${fmtD(h.date, !hv.season)}</td><td><span class="cropname"><span class="dot" style="--c:${cropColor(cropById(h.crop_id))}"></span>${esc(h.crop_name)}</span></td><td class="muted">${esc(h.variety_name || "")}</td><td class="r"><b>${fmtW(h.weight_g)}</b></td><td class="muted small wrap">${esc(h.notes)}${h.planting_id ? ` <span class="badge">planting ${h.planting_id}</span>` : ""}</td><td class="r"><span class="muted">✎</span></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No harvests match.</td></tr>`}
-    </tbody></table></div></div>`;
+    <div id="hv-list" class="hvlist"></div>
+    <div class="row small" style="margin-top:12px">
+      <a class="btn ghost" href="${API}/export.csv" download>Export CSV</a>
+      <label class="btn ghost">Import CSV<input type="file" id="hv-import" accept=".csv,text/csv" class="hidden"></label>
+    </div></div>`;
+  drawHarvestList();
   $("#hv-season").onchange = e => { hv.season = e.target.value; renderHarvests(); };
   $("#hv-crop").onchange = e => { hv.crop = e.target.value; renderHarvests(); };
-  document.querySelectorAll("[data-edit]").forEach(r => r.onclick = () => harvestModal(Number(r.dataset.edit), renderHarvests));
+  $("#hv-q").oninput = e => { hv.q = e.target.value; drawHarvestList(); };
   $("#hv-import").onchange = guard(async e => {
     const f = e.target.files[0]; if (!f) return;
     const fd = new FormData(); fd.append("file", f);
     const res = await api("/import/csv", { method: "POST", body: fd });
-    toast(`Imported ${res.added}, skipped ${res.skipped} duplicates${res.errors.length ? `, ${res.errors.length} errors` : ""}`);
+    toast(`Imported ${res.added}, skipped ${res.skipped} already present${res.errors.length ? `, ${res.errors.length} errors` : ""}`);
     if (res.errors.length) console.warn(res.errors);
     await loadBase(); renderHarvests();
   });
+}
+function drawHarvestList() {
+  const needle = hv.q.trim().toLowerCase();
+  const rows = needle ? hvRows.filter(h => [h.crop_name, h.variety_name, h.notes].some(v => (v || "").toLowerCase().includes(needle))) : hvRows;
+  $("#hv-sum").textContent = `${plural(rows.length, "pick")} · ${fmtW(rows.reduce((a, h) => a + h.weight_g, 0))}`;
+  const byDay = {}; rows.forEach(h => (byDay[h.date] = byDay[h.date] || []).push(h));
+  $("#hv-list").innerHTML = Object.keys(byDay).map(d => `<div class="daysep">${hv.season ? fmtDW(d) : fmtD(d, true)} · ${fmtW(byDay[d].reduce((a, h) => a + h.weight_g, 0))}</div>${byDay[d].map(entryHTML).join("")}`).join("")
+    || `<p class="empty">No harvests match.</p>`;
+  wireEntries(renderHarvests);
 }
 
 /* ===================== WEATHER ===================== */
@@ -294,23 +432,23 @@ async function renderWeather() {
   for (let d = 1; d <= last; d++) {
     const iso = `${state.month}-${String(d).padStart(2, "0")}`; if (iso > todayISO()) break;
     const w = byDate[iso];
-    rows.push(`<tr class="click" data-d="${iso}"><td class="num">${fmtDW(iso)}</td>
-      <td class="r">${w ? fmtT(w.tmax_c) : "<span class='muted'>—</span>"}</td><td class="r">${w ? fmtT(w.tmin_c) : "<span class='muted'>—</span>"}</td>
-      <td class="r">${w && w.precip_mm != null ? (w.precip_mm >= 0.05 ? fmtP(w.precip_mm) : "<span class='muted'>0</span>") : "<span class='muted'>—</span>"}</td>
-      <td class="r">${w ? fmtSun(w.sunshine_s) : "<span class='muted'>—</span>"}</td>
-      <td class="r">${hByDate[iso] ? fmtW(hByDate[iso]) : ""}</td>
-      <td class="small wrap">${w?.source === "manual" ? `<span class="badge">manual</span> ` : ""}${esc(w?.notes || "")}</td></tr>`);
+    const dash = "<span class='muted'>—</span>";
+    rows.push(`<tr class="click" data-d="${iso}"><td><span class="num">${fmtDW(iso)}</span>${w?.source === "manual" ? ` <span class="badge">manual</span>` : ""}${w?.notes ? `<div class="small muted wxnote">${esc(w.notes)}</div>` : ""}</td>
+      <td class="r">${w ? `${fmtT(w.tmax_c)}<span class="muted"> / ${fmtT(w.tmin_c)}</span>` : dash}</td>
+      <td class="r">${w && w.precip_mm != null ? (w.precip_mm >= 0.05 ? fmtP(w.precip_mm) : "<span class='muted'>0</span>") : dash}</td>
+      <td class="r hide-xs">${w ? fmtSun(w.sunshine_s) : dash}</td>
+      <td class="r">${hByDate[iso] ? `<b>${fmtW(hByDate[iso])}</b>` : ""}</td></tr>`);
   }
   const tot = days.reduce((a, d) => a + (d.precip_mm || 0), 0);
   $("#view").innerHTML = `<div class="card">
-    <h2><span class="row"><button class="btn ghost" id="wx-prev">‹</button><span>${fmtMonth(state.month)}</span><button class="btn ghost" id="wx-next">›</button></span>
-        <span class="sub">${days.length ? `${fmtP(tot)} rain · ${days.filter(d => (d.precip_mm || 0) >= 1).length} rain days` : ""}</span></h2>
+    <div class="monthnav"><button class="btn ghost" id="wx-prev" aria-label="Previous month">‹</button><h2>${fmtMonth(state.month)}</h2><button class="btn ghost" id="wx-next" aria-label="Next month" ${state.month >= todayISO().slice(0, 7) ? "disabled" : ""}>›</button>
+      <span class="sub">${days.length ? `${fmtP(tot)} · ${plural(days.filter(d => (d.precip_mm || 0) >= 1).length, "rain day")}` : ""}</span></div>
     <div class="row small muted" style="margin-bottom:8px">
       <span>${s.location_name ? `${esc(s.location_name)} · ` : ""}${s.weather_enabled ? (s.weather_last_fetch ? "last fetched " + new Date(s.weather_last_fetch).toLocaleString() : "not fetched yet") : "auto-fetch disabled"}${s.weather_last_error ? ` · <span style="color:var(--danger)">${esc(s.weather_last_error)}</span>` : ""}</span>
       <span class="grow"></span>
       ${s.weather_enabled ? `<button class="btn" id="wx-refresh">Refresh last 7 days</button>` : ""}
     </div>
-    <div class="scrollx"><table><thead><tr><th>Day</th><th class="r">High</th><th class="r">Low</th><th class="r">Rain</th><th class="r">Sun</th><th class="r">Harvest</th><th>Notes</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>
+    <table class="wxtable"><thead><tr><th>Day</th><th class="r">High / low</th><th class="r">Rain</th><th class="r hide-xs">Sun</th><th class="r">Picked</th></tr></thead><tbody>${rows.reverse().join("")}</tbody></table>
     <p class="muted small" style="margin:10px 0 0">Tap a day to correct it or add a note. Days you edit are marked <span class="badge">manual</span> and won't be overwritten by the daily fetch.</p>
   </div>`;
   $("#wx-prev").onclick = () => { state.month = shiftMonth(state.month, -1); renderWeather(); };
@@ -395,9 +533,9 @@ async function renderAnalyze() {
   const season = state.season;
   const [ov, ss, cum, gdd] = await Promise.all([api("/stats/overview"), api("/stats/season/" + season), api("/stats/cumulative" + (state.analyzeCrop ? "?crop_id=" + state.analyzeCrop : "")), api("/stats/gdd")]);
   const sm = ss.summary, wx = ss.weather;
-  const prevSeason = state.seasons[state.seasons.indexOf(season) - 1];
-  const prevTot = prevSeason ? ov.season_totals[String(prevSeason)]?.total_g : null;
-  const delta = (cur, prev) => { if (prev == null || !prev) return ""; const p = (cur - prev) / prev * 100; return `<div class="d ${p >= 0 ? "up" : "down"}">${p >= 0 ? "+" : ""}${p.toFixed(0)}% vs ${prevSeason}</div>`; };
+  // While a season is in progress, compare with last season up to the same date.
+  const pv = sm.prev;
+  const delta = (cur, prev) => { if (!pv || !prev) return ""; const p = (cur - prev) / prev * 100; return `<div class="d ${p >= 0 ? "up" : "down"}">${p >= 0 ? "+" : ""}${p.toFixed(0)}% vs ${pv.season}${pv.partial ? " by this date" : ""}</div>`; };
   const tile = (l, v, d = "") => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div>${d ? (d.startsWith("<div") ? d : `<div class="d">${d}</div>`) : ""}</div>`;
 
   $("#view").innerHTML = `
@@ -407,7 +545,7 @@ async function renderAnalyze() {
     <select id="an-crop"><option value="">All crops</option>${state.crops.map(c => `<option value="${c.id}" ${String(c.id) === String(state.analyzeCrop) ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
   </div>
   <div class="tiles">
-    ${tile("Total harvested", fmtW(sm.total_g), delta(sm.total_g, prevTot))}
+    ${tile("Total harvested", fmtW(sm.total_g), delta(sm.total_g, pv && pv.to_date_g))}
     ${tile("Harvests", sm.harvests, `${sm.crops} crops · ${sm.days_with_harvest} days`)}
     ${tile("Season span", sm.first_date ? `${fmtD(sm.first_date)} – ${fmtD(sm.last_date)}` : "—", sm.first_date ? plural(Math.round((pd(sm.last_date) - pd(sm.first_date)) / 864e5) + 1, "day") : "")}
     ${tile("Top crop", sm.top_crop ? esc(sm.top_crop.name) : "—", sm.top_crop ? fmtW(sm.top_crop.total_g) : "")}

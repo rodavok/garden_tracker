@@ -7,10 +7,15 @@ reachable on the LAN as **http://garden.local**. No accounts — local network o
 
 ## What it does
 
-- **Log** — phone-first harvest entry: date, crop quick-pick, optional variety and
-  planting, weight, notes. "Repeat last" copies the previous entry's crop/variety.
-  Shows that day's weather and the most recent entries.
-- **Harvests** — full list with season/crop filters, inline edit/delete, CSV
+- **Log** — phone-first harvest entry: tap a crop, punch the weight on a big
+  keypad (touch screens; a normal input with a mouse), Save. Shows the crop's
+  typical pick and warns when a weight looks like a unit slip. Saves and deletes
+  show an Undo toast instead of a confirm dialog. "Repeat" copies the previous
+  entry's crop/variety/planting.
+- **Season so far** (on the Log page) — season total vs last year *by the same
+  date*, last 7 days, today, and per-crop bars with days since the last pick.
+  Crops overdue against their usual picking interval are flagged "check".
+- **Harvests** — day-grouped list with season/crop filters, search, edit/delete, CSV
   export, and CSV import (accepts the Notion export: `Date, Crop, Weight (g)`).
 - **Weather** — one row per day: high, low, rain, sunshine, harvest total, notes.
   Fetched automatically from [Open-Meteo](https://open-meteo.com) (free, no key)
@@ -45,7 +50,7 @@ deploy/       install.sh, garden.service, garden.env.example, backup.sh
 ```bash
 python3 -m venv venv && venv/bin/pip install -r requirements.txt
 venv/bin/python -m app.seed                      # optional: import data/seed/*.csv
-venv/bin/uvicorn app.main:app --reload --port 8000
+venv/bin/uvicorn app.main:app --reload --timeout-graceful-shutdown 2 --port 8000
 ```
 
 Open http://localhost:8000. Weather starts backfilling a couple of seconds after
@@ -54,7 +59,9 @@ boot (see the Weather tab's status line).
 ## Deploy to a Proxmox LXC
 
 1. Create an unprivileged Debian 12 (or Ubuntu 24.04) container, hostname
-   **garden**, on your LAN bridge with DHCP. 1 core / 512 MB / 4 GB is plenty.
+   **garden**, on your LAN bridge. 1 core / 512 MB / 4 GB is plenty. Give it a
+   fixed address, either a DHCP reservation on the router or a static IPv4 in
+   Proxmox (Network tab), and set IPv6 to static/none unless you use it.
    Make sure it has outbound internet for the weather fetch.
 2. Inside the container, as root:
 
@@ -71,6 +78,11 @@ boot (see the Weather tab's status line).
    most Linux desktops resolve `.local` names out of the box. If your router or
    Pi-hole does local DNS instead, point `garden.local` (or any name) at the
    container's IP there.
+
+   If `garden.local` stops resolving now and then, run
+   `journalctl -u avahi-daemon -n 50` in the container. "fork() failed" means
+   the process limit shared with other containers (the installer removes it);
+   "host name conflict" means it renamed itself to `garden-2.local`.
 4. Settings → confirm the location (defaults to Tonawanda, NY) and let the
    backfill run.
 
