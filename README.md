@@ -37,10 +37,13 @@ reachable on the LAN as **http://garden.local**. No accounts — local network o
 ```
 app/          FastAPI backend
   main.py       routes            db.py        SQLite schema + CRUD
+  models.py     Pydantic models   config.py    paths + GARDEN_* env vars
   weather.py    Open-Meteo fetch + daily scheduler
   analytics.py  YoY / season / GDD queries
+  events.py     SSE pub/sub for live updates between devices
   importer.py   CSV import/export   seed.py    `python -m app.seed`
 web/          index.html + app.js (no build step, no CDN dependencies)
+tests/        pytest suite (API tests against a temp database)
 data/         garden.db (created on first run), seed/garden_produce.csv
 deploy/       install.sh, garden.service, garden.env.example, backup.sh
 ```
@@ -55,6 +58,13 @@ venv/bin/uvicorn app.main:app --reload --timeout-graceful-shutdown 2 --port 8000
 
 Open http://localhost:8000. Weather starts backfilling a couple of seconds after
 boot (see the Weather tab's status line).
+
+Run the tests:
+
+```bash
+venv/bin/pip install -r requirements-dev.txt
+venv/bin/pytest
+```
 
 ## Deploy to a Proxmox LXC
 
@@ -102,7 +112,8 @@ fetching), `GARDEN_DATA` / `GARDEN_DB` (store the database elsewhere).
 ### Backups
 
 `deploy/backup.sh` makes a consistent gzip copy of the SQLite file using the
-online-backup API. Nightly at 03:15, keeping 30:
+online-backup API and prunes all but the newest `GARDEN_BACKUP_KEEP` (default
+30). Nightly at 03:15:
 
 ```
 15 3 * * * GARDEN_BACKUP_DIR=/mnt/backups/garden /opt/garden/deploy/backup.sh
@@ -125,7 +136,9 @@ All under `/api`, JSON. Useful ones for scripting:
 | GET | `/weather?start=&end=` | |
 | PUT/DELETE | `/weather/{date}` | manual override / reset to auto |
 | POST | `/weather/refresh`, `/weather/backfill` | |
-| GET | `/stats/overview`, `/stats/season/{year}`, `/stats/cumulative?crop_id=`, `/stats/gdd` | |
+| GET | `/stats/overview`, `/stats/season/{year}`, `/stats/pulse`, `/stats/cumulative?crop_id=`, `/stats/gdd` | `pulse` = "Season so far" card |
+| GET | `/seasons` | years with data |
+| GET/PATCH | `/settings` · GET `/geocode?q=` | location, backfill start, weather status |
 | POST | `/import/csv` (multipart `file`) · GET `/export.csv` | |
 | GET | `/events` (SSE) · `/health` | |
 
