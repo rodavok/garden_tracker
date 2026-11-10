@@ -1,0 +1,16 @@
+.git
+.claude
+.idea
+.vscode
+venv
+tests
+**/__pycache__
+*.pyc
+.env
+data/garden.db*
+data/backups
+.*rc
+.*profile
+.gitconfig
+.gitmodules
+.mcp.json

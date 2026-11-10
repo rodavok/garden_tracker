@@ -44,7 +44,7 @@ fi
 echo "==> avahi (mDNS) tweaks for an unprivileged LXC"
 # Unprivileged Proxmox containers all map their UIDs onto the same host range,
 # so the 'avahi' user here is the same kernel UID as in every other container
-# running avahi (e.g. recipe_book). Avahi's default rlimit-nproc=3 is then
+# running avahi. Avahi's default rlimit-nproc=3 is then
 # shared between them, and whichever starts second can fail to fork, so
 # garden.local intermittently stops resolving. Drop the limit.
 AVAHI_CONF=/etc/avahi/avahi-daemon.conf

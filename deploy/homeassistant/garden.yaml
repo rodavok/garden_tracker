@@ -1,0 +1,87 @@
+# Garden Tracker -> Home Assistant package.
+#
+# Copy to <config>/packages/garden.yaml, make sure configuration.yaml has
+#   homeassistant:
+#     packages: !include_dir_named packages
+# then restart Home Assistant. See the README for details.
+#
+# Change the two things marked CHANGE ME:
+#   - the resource URL (Docker installs use http://<host-ip>:8000)
+#   - the notify service in the automation (your phone's mobile_app_ service)
+
+rest:
+  - resource: http://garden.local/api/stats/pulse   # CHANGE ME if not using garden.local
+    scan_interval: 300
+    timeout: 10
+    sensor:
+      - name: Garden today
+        unique_id: garden_tracker_today
+        value_template: "{{ value_json.today_g }}"
+        unit_of_measurement: g
+        device_class: weight
+        state_class: measurement
+        icon: mdi:basket
+        json_attributes:
+          - today_picks
+
+      - name: Garden last 7 days
+        unique_id: garden_tracker_week
+        value_template: "{{ value_json.week_g }}"
+        unit_of_measurement: g
+        device_class: weight
+        state_class: measurement
+        icon: mdi:basket
+
+      - name: Garden season
+        unique_id: garden_tracker_season
+        value_template: "{{ value_json.season_g }}"
+        unit_of_measurement: g
+        device_class: weight
+        state_class: measurement
+        icon: mdi:sprout
+        json_attributes:
+          - season
+          - prev_season
+          - prev_to_date_g
+          - prev_total_g
+
+      # Season total vs last year by the same date, as a percentage change.
+      # Unknown until last year has harvests up to this date.
+      - name: Garden vs last year
+        unique_id: garden_tracker_vs_last_year
+        value_template: >
+          {% set p = value_json.prev_to_date_g %}
+          {{ ((value_json.season_g - p) / p * 100) | round(0) if p > 0 else none }}
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:chart-line
+
+      # How many crops the app flags "check" (overdue against their usual
+      # picking interval). The full per-crop list is in the `crops` attribute.
+      - name: Garden crops to check
+        unique_id: garden_tracker_crops_due
+        value_template: "{{ value_json.crops | selectattr('due') | list | count }}"
+        icon: mdi:alert-circle-outline
+        json_attributes:
+          - crops
+
+automation:
+  - id: garden_tracker_pick_reminder
+    alias: "Garden: pick reminder"
+    description: Evening nudge when a crop is overdue for picking.
+    mode: single
+    triggers:
+      - trigger: time
+        at: "17:30:00"
+    conditions:
+      - condition: numeric_state
+        entity_id: sensor.garden_crops_to_check
+        above: 0
+    actions:
+      - action: notify.notify   # CHANGE ME, e.g. notify.mobile_app_pixel_8
+        data:
+          title: Time to check the garden
+          message: >
+            {% set due = state_attr('sensor.garden_crops_to_check', 'crops')
+                         | selectattr('due') | list %}
+            {% for c in due %}{{ c.name }} ({{ c.days_since }} days since last pick){{ ", " if not loop.last }}{% endfor %}
