@@ -5,6 +5,16 @@ and comparing yields year over year. FastAPI + SQLite backend and one static
 vanilla-JS page. Runs under systemd in a Debian LXC (reachable on the LAN as
 **http://garden.local**) or as a Docker container. No accounts — local network only.
 
+<p>
+  <img src="docs/screenshots/phone-log.png" alt="Log page on a phone: crop buttons, weight entry, and the season-so-far card" width="260">
+  &nbsp;
+  <img src="docs/screenshots/analyze.png" alt="Analyze page: season stat tiles, cumulative yield by season, weekly harvest by crop, year-over-year table" width="520">
+</p>
+
+![Plantings page: sow and set-out dates, plant counts, yield per plant, days to first pick](docs/screenshots/plantings.png)
+
+<sub>Screenshots use generated demo data.</sub>
+
 ## What it does
 
 - **Log** — phone-first harvest entry: tap a crop, punch the weight on a big
