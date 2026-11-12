@@ -10,6 +10,10 @@ from datetime import date, timedelta
 
 os.environ["GARDEN_DATA"] = tempfile.mkdtemp(prefix="garden-test-")
 os.environ["GARDEN_WEATHER"] = "1"
+# A configured install. test_api.py clears these to test a fresh one.
+os.environ["GARDEN_LAT"] = "40.0"
+os.environ["GARDEN_LON"] = "-75.0"
+os.environ["GARDEN_TZ"] = "America/New_York"
 
 import pytest
 from fastapi.testclient import TestClient

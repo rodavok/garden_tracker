@@ -158,8 +158,8 @@ class Settings(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
     location_name: str = ""
-    timezone: str = "America/New_York"
-    backfill_start: str = "2025-08-01"
+    timezone: str = "UTC"
+    backfill_start: str = ""
     backfill_done: bool = False
     weather_enabled: bool = True
     weather_last_fetch: Optional[str] = None
@@ -170,4 +170,5 @@ class SettingsUpdate(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
     location_name: Optional[str] = None
+    timezone: Optional[str] = None
     backfill_start: Optional[str] = None

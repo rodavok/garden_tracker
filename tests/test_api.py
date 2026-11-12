@@ -2,7 +2,9 @@ import asyncio
 import threading
 from datetime import timedelta
 
-from app import analytics, db, events, weather
+from fastapi.testclient import TestClient
+
+from app import analytics, config, db, events, main, weather
 
 from .conftest import wait_for
 
@@ -22,6 +24,37 @@ def test_saving_location_starts_backfill(client, fake_weather):
     assert r.json()["location_name"] == "Somewhere"
     assert wait_for(lambda: db.get_setting("backfill_done") == "1")
     assert db.weather_count() > 0
+
+
+def test_fresh_install_has_no_location_and_fetches_nothing(fake_weather, monkeypatch):
+    for suffix in ("", "-wal", "-shm"):
+        p = config.DB_PATH.with_name(config.DB_PATH.name + suffix)
+        if p.exists():
+            p.unlink()
+    monkeypatch.setattr(config, "DEFAULT_LAT", None)
+    monkeypatch.setattr(config, "DEFAULT_LON", None)
+    monkeypatch.setattr(config, "DEFAULT_LOCATION", "")
+    with TestClient(main.app) as c:
+        s = c.get("/api/settings").json()
+        assert s["lat"] is None and s["lon"] is None and s["location_name"] == ""
+        assert c.get("/api/harvests").json() == []
+        assert weather.location() is None
+    assert fake_weather.calls == []
+
+
+def test_location_pick_sets_timezone(client, fake_weather):
+    r = client.patch("/api/settings", json={"lat": 51.5, "lon": -0.13, "location_name": "London", "timezone": "Europe/London"})
+    assert r.status_code == 200, r.text
+    assert r.json()["timezone"] == "Europe/London"
+
+
+def test_bad_timezone_rejected_without_partial_save(client):
+    before = client.get("/api/settings").json()
+    r = client.patch("/api/settings", json={"location_name": "Nowhere", "timezone": "Mars/Olympus"})
+    assert r.status_code == 422
+    after = client.get("/api/settings").json()
+    assert after["location_name"] == before["location_name"]
+    assert after["timezone"] == before["timezone"]
 
 
 def test_refresh_and_backfill_endpoints(client, fake_weather):

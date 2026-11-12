@@ -12,12 +12,13 @@ import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import analytics, db, events, importer, weather
+from . import analytics, config, db, events, importer, weather
 from .config import WEB_DIR, WEATHER_ENABLED
 from .models import (
     Crop, CropCreate, CropUpdate, Harvest, HarvestCreate, HarvestUpdate,
@@ -79,8 +80,8 @@ def _settings() -> Settings:
             return None
     return Settings(
         lat=f("lat"), lon=f("lon"), location_name=s.get("location_name") or "",
-        timezone=s.get("timezone") or "America/New_York",
-        backfill_start=s.get("backfill_start") or "2025-08-01",
+        timezone=s.get("timezone") or config.TIMEZONE,
+        backfill_start=s.get("backfill_start") or config.BACKFILL_START,
         backfill_done=s.get("backfill_done") == "1",
         weather_enabled=WEATHER_ENABLED,
         weather_last_fetch=s.get("weather_last_fetch"),
@@ -96,6 +97,13 @@ def get_settings():
 @app.patch("/api/settings", response_model=Settings)
 def update_settings(patch: SettingsUpdate):
     data = patch.model_dump(exclude_unset=True)
+    if not data.get("timezone"):
+        data.pop("timezone", None)
+    else:
+        try:
+            ZoneInfo(data["timezone"])
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"Unknown time zone: {data['timezone']}")
     moved = False
     for k, v in data.items():
         if k == "backfill_start" and v:

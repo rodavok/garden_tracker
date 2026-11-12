@@ -98,6 +98,12 @@ async function render() {
   renderNav();
   const v = $("#view"); v.style.opacity = ".6";
   try { await RENDER[state.view](); } catch (e) { v.innerHTML = `<div class="card"><p class="muted">Couldn't load: ${esc(e.message)}</p></div>`; console.error(e); }
+  const s = state.settings;
+  if (s && s.weather_enabled && (s.lat == null || s.lon == null) && state.view !== "settings") {
+    v.insertAdjacentHTML("afterbegin", `<div class="card setup"><b>Welcome!</b> Set your garden's location so the app can record daily weather alongside your harvests.
+      <button class="btn primary" id="setup-loc">Set location</button></div>`);
+    $("#setup-loc").onclick = () => { state.view = "settings"; location.hash = "settings"; render().then(() => $("#geo-q")?.focus()); };
+  }
   v.style.opacity = "1";
 }
 
@@ -741,7 +747,7 @@ async function renderSettings() {
   <div class="card">
     <h2>Data</h2>
     <div class="row"><a class="btn" href="${API}/export.csv" download>Export harvests CSV</a><label class="btn">Import CSV<input type="file" id="s-import" accept=".csv,text/csv" class="hidden"></label></div>
-    <p class="muted small">Import accepts the Notion export format (Date, Crop, Weight (g)) plus optional Variety and Notes columns. Duplicate rows are skipped.</p>
+    <p class="muted small">Import takes a CSV with Date, Crop and Weight (g) columns, plus optional Variety and Notes. Exports from this app re-import as-is. Duplicate rows are skipped.</p>
     <p class="muted small" style="margin-bottom:0">Database: <code>data/garden.db</code> on the server — see deploy/backup.sh for nightly copies.</p>
   </div></div>
   <div class="card">
@@ -750,16 +756,16 @@ async function renderSettings() {
     <p class="muted small" style="margin:10px 0 0">Colours are used everywhere a crop appears. Eight distinct colours are available; extra crops get grey in charts.</p>
   </div>`;
 
-  let geoT; $("#geo-q").oninput = e => { clearTimeout(geoT); const q = e.target.value.trim(); if (q.length < 2) { $("#geo-res").classList.add("hidden"); return; } geoT = setTimeout(guard(async () => {
+  let geoT, pickedTz = null; $("#geo-q").oninput = e => { clearTimeout(geoT); const q = e.target.value.trim(); if (q.length < 2) { $("#geo-res").classList.add("hidden"); return; } geoT = setTimeout(guard(async () => {
     const res = await api("/geocode?q=" + encodeURIComponent(q)); const box = $("#geo-res");
     box.innerHTML = res.map((r, i) => `<button type="button" data-i="${i}">${esc(r.name)} <span class="muted small">${r.lat.toFixed(3)}, ${r.lon.toFixed(3)}</span></button>`).join("") || `<button type="button" disabled>No matches</button>`;
     box.classList.remove("hidden");
-    box.querySelectorAll("button[data-i]").forEach(b => b.onclick = () => { const r = res[Number(b.dataset.i)]; $("#s-name").value = r.name; $("#s-lat").value = r.lat; $("#s-lon").value = r.lon; box.classList.add("hidden"); });
+    box.querySelectorAll("button[data-i]").forEach(b => b.onclick = () => { const r = res[Number(b.dataset.i)]; $("#s-name").value = r.name; $("#s-lat").value = r.lat; $("#s-lon").value = r.lon; pickedTz = r.timezone || null; box.classList.add("hidden"); });
   }), 350); };
   $("#s-save").onclick = guard(async () => {
     const lat = parseFloat($("#s-lat").value), lon = parseFloat($("#s-lon").value);
     if (isNaN(lat) || isNaN(lon)) { toast("Enter latitude and longitude"); return; }
-    await jpatch("/settings", { lat, lon, location_name: $("#s-name").value.trim() }); toast("Location saved — fetching weather"); await loadBase(); renderSettings();
+    await jpatch("/settings", { lat, lon, location_name: $("#s-name").value.trim(), ...(pickedTz ? { timezone: pickedTz } : {}) }); toast("Location saved — fetching weather"); await loadBase(); renderSettings();
   });
   $("#s-backfill").onclick = guard(async () => { await jpost("/weather/backfill", { start: $("#s-bf").value }); toast("Backfill started"); });
   $("#s-import").onchange = guard(async e => { const f = e.target.files[0]; if (!f) return; const fd = new FormData(); fd.append("file", f); const res = await api("/import/csv", { method: "POST", body: fd }); toast(`Imported ${res.added}, skipped ${res.skipped}`); await loadBase(); renderSettings(); });

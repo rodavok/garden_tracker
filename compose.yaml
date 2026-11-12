@@ -8,13 +8,11 @@ services:
       - "8000:8000"          # change the left side to publish on another port, e.g. "80:8000"
     volumes:
       - garden-data:/data    # garden.db and backups/ live here
-    environment:
-      GARDEN_TZ: America/New_York
-      # Optional, see deploy/garden.env.example for the full list:
-      # GARDEN_LAT: "43.0203"
-      # GARDEN_LON: "-78.8803"
-      # GARDEN_LOCATION: "Tonawanda, New York"
-      # GARDEN_SEED: "0"     # don't import data/seed on first start
+    # Nothing needs setting: pick your location in the app on first open.
+    # Optional overrides, see deploy/garden.env.example for the full list:
+    # environment:
+    #   GARDEN_TZ: Europe/London
+    #   GARDEN_WEATHER: "0"   # never call Open-Meteo
 
 volumes:
   garden-data:

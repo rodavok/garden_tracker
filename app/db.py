@@ -88,8 +88,8 @@ def init_db() -> None:
         conn.execute("PRAGMA journal_mode=WAL")   # persistent: stored in the db file
         conn.executescript(SCHEMA)
         defaults = {
-            "lat": str(config.DEFAULT_LAT),
-            "lon": str(config.DEFAULT_LON),
+            "lat": "" if config.DEFAULT_LAT is None else str(config.DEFAULT_LAT),
+            "lon": "" if config.DEFAULT_LON is None else str(config.DEFAULT_LON),
             "location_name": config.DEFAULT_LOCATION,
             "timezone": config.TIMEZONE,
             "backfill_start": config.BACKFILL_START,

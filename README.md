@@ -1,9 +1,13 @@
 # Garden Tracker
 
 A small self-hosted app for logging garden harvests, recording daily weather,
-and comparing yields year over year. FastAPI + SQLite backend and one static
-vanilla-JS page. Runs under systemd in a Debian LXC (reachable on the LAN as
-**http://garden.local**) or as a Docker container. No accounts — local network only.
+and comparing yields year over year. Weigh what you pick, tap it in on your
+phone, and see how this season stacks up against the last.
+
+One container, one SQLite file, no accounts, no cloud: it runs on your home
+network (a Raspberry Pi, NAS, home server or Proxmox LXC is plenty) and the only
+outside service it talks to is the free [Open-Meteo](https://open-meteo.com)
+weather API, with no key needed.
 
 <p>
   <img src="docs/screenshots/phone-log.png" alt="Log page on a phone: crop buttons, weight entry, and the season-so-far card" width="260">
@@ -14,6 +18,26 @@ vanilla-JS page. Runs under systemd in a Debian LXC (reachable on the LAN as
 ![Plantings page: sow and set-out dates, plant counts, yield per plant, days to first pick](docs/screenshots/plantings.png)
 
 <sub>Screenshots use generated demo data.</sub>
+
+## Quick start
+
+With Docker:
+
+```bash
+git clone https://github.com/rodavok/garden_tracker && cd garden_tracker
+docker compose up -d --build
+```
+
+Open **http://localhost:8000** (or `http://<server-ip>:8000` from your phone),
+search for your town when it asks for a location, and start logging. Weather
+history from January 1 last year fills in by itself in the background.
+
+Other ways to run it: [plain Python](#run-locally), a
+[Proxmox LXC with systemd](#deploy-to-a-proxmox-lxc) that answers at
+`http://garden.local`, and a [Home Assistant](#home-assistant) package for
+sensors and pick reminders. Already tracking harvests in a spreadsheet? Export
+it as CSV with `Date`, `Crop` and `Weight (g)` columns and import it from
+Settings.
 
 ## What it does
 
@@ -26,7 +50,7 @@ vanilla-JS page. Runs under systemd in a Debian LXC (reachable on the LAN as
   date*, last 7 days, today, and per-crop bars with days since the last pick.
   Crops overdue against their usual picking interval are flagged "check".
 - **Harvests** — day-grouped list with season/crop filters, search, edit/delete, CSV
-  export, and CSV import (accepts the Notion export: `Date, Crop, Weight (g)`).
+  export, and CSV import (`Date, Crop, Weight (g)`, plus optional `Variety` and `Notes`).
 - **Weather** — one row per day: high, low, rain, sunshine, harvest total, notes.
   Fetched automatically from [Open-Meteo](https://open-meteo.com) (free, no key)
   every morning; a one-time backfill fills history. Tap a day to correct values
@@ -54,16 +78,17 @@ app/          FastAPI backend
   importer.py   CSV import/export   seed.py    `python -m app.seed`
 web/          index.html + app.js (no build step, no CDN dependencies)
 tests/        pytest suite (API tests against a temp database)
-data/         garden.db (created on first run), seed/garden_produce.csv
-deploy/       install.sh, garden.service, garden.env.example, backup.sh
-Dockerfile, compose.yaml, docker-entrypoint.sh   Docker image
+data/         garden.db (created on first run)
+deploy/       install.sh, garden.service, garden.env.example, backup.sh,
+              homeassistant/garden.yaml
+Dockerfile, compose.yaml   Docker image
 ```
 
 ## Run locally
 
 ```bash
 python3 -m venv venv && venv/bin/pip install -r requirements.txt
-venv/bin/python -m app.seed                      # optional: import data/seed/*.csv
+venv/bin/python -m app.seed my-harvests.csv      # optional: import a CSV
 venv/bin/uvicorn app.main:app --reload --timeout-graceful-shutdown 2 --port 8000
 ```
 
@@ -79,22 +104,17 @@ venv/bin/pytest
 
 ## Run with Docker
 
-```bash
-git clone https://github.com/rodavok/garden_tracker && cd garden_tracker
-docker compose up -d --build
-```
-
-Open http://localhost:8000 (or `http://<host-ip>:8000` from another device).
-To publish on port 80 instead, change the `ports:` line in `compose.yaml` to
+The [quick start](#quick-start) covers it. Open http://localhost:8000 (or
+`http://<host-ip>:8000` from another device). To publish on port 80 instead, change the `ports:` line in `compose.yaml` to
 `"80:8000"`. The container doesn't announce itself over mDNS, so `garden.local`
 won't resolve unless you add a DNS entry for the host.
 
-- **Data** lives in the `garden-data` volume, mounted at `/data`. On the first
-  start, with no database yet, the container imports `data/seed/garden_produce.csv`.
-  Set `GARDEN_SEED: "0"` to start empty instead.
-- **Configuration** goes in the `environment:` block of `compose.yaml`, using
-  the same `GARDEN_*` variables as below. Set `GARDEN_TZ` to your time zone so
-  the daily weather fetch runs at the right local hour.
+- **Data** lives in the `garden-data` volume, mounted at `/data`. A new
+  install starts empty.
+- **Configuration:** usually none. The location (and with it the time zone) is
+  picked in the app. Anything else goes in an `environment:` block in
+  `compose.yaml`, using the same `GARDEN_*` variables as
+  [below](#configuration).
 - **Updating:** `git pull && docker compose up -d --build`. The volume is kept.
 - **Backups:** `docker compose exec garden deploy/backup.sh` writes to
   `/data/backups` inside the volume. To schedule it, put that command in the
@@ -120,7 +140,7 @@ Without Compose:
 ```bash
 docker build -t garden-tracker .
 docker run -d --name garden --restart unless-stopped -p 8000:8000 \
-  -v garden-data:/data -e GARDEN_TZ=America/New_York garden-tracker
+  -v garden-data:/data garden-tracker
 ```
 
 ## Deploy to a Proxmox LXC
@@ -150,7 +170,7 @@ docker run -d --name garden --restart unless-stopped -p 8000:8000 \
    `journalctl -u avahi-daemon -n 50` in the container. "fork() failed" means
    the process limit shared with other containers (the installer removes it);
    "host name conflict" means it renamed itself to `garden-2.local`.
-4. Settings → confirm the location (defaults to Tonawanda, NY) and let the
+4. Open the app, pick your location when it asks, and let the weather
    backfill run.
 
 Updating later:
@@ -161,10 +181,17 @@ cd /opt/garden && git pull && venv/bin/pip install -r requirements.txt && system
 
 ### Configuration
 
-`/etc/garden/garden.env` (see `deploy/garden.env.example`) — all optional:
-`GARDEN_LAT`, `GARDEN_LON`, `GARDEN_LOCATION`, `GARDEN_TZ`,
-`GARDEN_BACKFILL_START`, `GARDEN_WEATHER_HOUR`, `GARDEN_WEATHER=0` (disable
-fetching), `GARDEN_DATA` / `GARDEN_DB` (store the database elsewhere).
+All optional. For the LXC install they go in `/etc/garden/garden.env` (see
+`deploy/garden.env.example`); for Docker, in `compose.yaml`.
+
+| Variable | Default | |
+|---|---|---|
+| `GARDEN_LAT`, `GARDEN_LON`, `GARDEN_LOCATION` | unset | pre-fill the location instead of picking it in the app |
+| `GARDEN_TZ` | `UTC` | replaced by the picked location's time zone |
+| `GARDEN_BACKFILL_START` | Jan 1 last year | how far back the first weather fetch reaches |
+| `GARDEN_WEATHER_HOUR` | `6` | local hour of the daily weather refresh |
+| `GARDEN_WEATHER` | `1` | `0` = never contact Open-Meteo (manual weather entry still works) |
+| `GARDEN_DATA`, `GARDEN_DB` | `data/`, `data/garden.db` | store the database elsewhere |
 
 ### Backups
 
@@ -258,7 +285,11 @@ sensors work fine with Home Assistant polling it on the LAN.
 - Growing degree days use base 10 °C with the daily max capped at 30 °C.
 - "Frost" = a day whose low is ≤ 0 °C. Last spring frost is the latest before
   July 1; first fall frost the earliest on/after July 1.
-- The weather backfill starts at `backfill_start` (default 2025-08-01). Run it
-  from an earlier date in Settings if you want full-year frost/GDD comparisons.
+- The weather backfill starts at `backfill_start` (default January 1 of last
+  year). Run it from an earlier date in Settings to compare more seasons.
 - Open-Meteo's archive lags ~5 days; the last week is filled from the forecast
   API and corrected on later refreshes. Manually edited days are left alone.
+
+## License
+
+[MIT](LICENSE)

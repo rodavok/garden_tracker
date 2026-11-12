@@ -15,8 +15,6 @@ RUN python -m venv venv \
 COPY app ./app
 COPY web ./web
 COPY deploy ./deploy
-COPY data/seed ./seed
-COPY docker-entrypoint.sh /usr/local/bin/
 
 RUN useradd --system --uid 1000 --home-dir /app garden \
  && mkdir -p /data \
@@ -28,6 +26,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD ["venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
 
-ENTRYPOINT ["docker-entrypoint.sh"]
 # Open SSE streams never close on their own, so cap how long shutdown waits.
 CMD ["venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "3"]

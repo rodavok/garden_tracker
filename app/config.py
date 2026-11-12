@@ -6,6 +6,7 @@ defaults; once the app has started they live in the settings table and are
 edited from the Settings page.
 """
 import os
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -13,16 +14,24 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("GARDEN_DATA", ROOT / "data"))
 DB_PATH = Path(os.environ.get("GARDEN_DB", DATA_DIR / "garden.db"))
 WEB_DIR = ROOT / "web"
-SEED_CSV = DATA_DIR / "seed" / "garden_produce.csv"
 
-# First-run defaults for the weather location (City of Tonawanda, NY).
-DEFAULT_LAT = float(os.environ.get("GARDEN_LAT", "43.0203"))
-DEFAULT_LON = float(os.environ.get("GARDEN_LON", "-78.8803"))
-DEFAULT_LOCATION = os.environ.get("GARDEN_LOCATION", "Tonawanda, New York")
-TIMEZONE = os.environ.get("GARDEN_TZ", "America/New_York")
 
-# Earliest date the one-time weather backfill reaches back to.
-BACKFILL_START = os.environ.get("GARDEN_BACKFILL_START", "2025-08-01")
+def _float_env(name: str):
+    v = os.environ.get(name, "").strip()
+    return float(v) if v else None
+
+
+# Optional first-run location. Unset by default: the app asks for a location
+# on first open (Settings), and weather fetching waits until one is chosen.
+DEFAULT_LAT = _float_env("GARDEN_LAT")
+DEFAULT_LON = _float_env("GARDEN_LON")
+DEFAULT_LOCATION = os.environ.get("GARDEN_LOCATION", "")
+# Picking a place in Settings replaces this with that place's time zone.
+TIMEZONE = os.environ.get("GARDEN_TZ", "UTC")
+
+# Earliest date the one-time weather backfill reaches back to
+# (default: January 1 of last year, so there's a full season to compare).
+BACKFILL_START = os.environ.get("GARDEN_BACKFILL_START", f"{date.today().year - 1}-01-01")
 # Local hour (0-23) at which the daily weather refresh runs.
 WEATHER_REFRESH_HOUR = int(os.environ.get("GARDEN_WEATHER_HOUR", "6"))
 # Set to 0 to disable all outbound weather fetching (manual entry still works).

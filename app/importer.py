@@ -1,5 +1,5 @@
-"""CSV import/export. The import accepts the Notion export format
-(Date, Crop, Weight (g)) plus optional Variety and Notes columns.
+"""CSV import/export. The import accepts a CSV with Date, Crop and Weight (g)
+columns, plus optional Variety and Notes columns.
 
 Re-importing is safe: a row is skipped when the database already holds as many
 (date, crop, weight) matches as the file has seen so far. So two identical
